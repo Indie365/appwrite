@@ -123,6 +123,7 @@ const APP_DATABASE_ATTRIBUTE_INT_RANGE = 'intRange';
 const APP_DATABASE_ATTRIBUTE_FLOAT_RANGE = 'floatRange';
 const APP_DATABASE_ATTRIBUTE_STRING_MAX_LENGTH = 1_073_741_824; // 2^32 bits / 4 bits per char
 const APP_DATABASE_TIMEOUT_MILLISECONDS = 15_000;
+const APP_STORAGE_BACKUPS = '/storage/backups';
 const APP_STORAGE_UPLOADS = '/storage/uploads';
 const APP_STORAGE_FUNCTIONS = '/storage/functions';
 const APP_STORAGE_BUILDS = '/storage/builds';
@@ -184,6 +185,7 @@ const DELETE_TYPE_TOPIC = 'topic';
 const DELETE_TYPE_TARGET = 'target';
 const DELETE_TYPE_EXPIRED_TARGETS = 'invalid_targets';
 const DELETE_TYPE_SESSION_TARGETS = 'session_targets';
+const DELETE_TYPE_BACKUPS = 'backups';
 
 // Message types
 const MESSAGE_SEND_TYPE_INTERNAL = 'internal';
@@ -213,8 +215,12 @@ const METRIC_TEAMS = 'teams';
 const METRIC_USERS = 'users';
 const METRIC_MESSAGES  = 'messages';
 const METRIC_SESSIONS  = 'sessions';
+const METRIC_BACKUPS  = 'backups';
+const METRIC_BACKUPS_STORAGE  = 'backups.storage';
 const METRIC_DATABASES = 'databases';
 const METRIC_COLLECTIONS = 'collections';
+const METRIC_DATABASE_ID_BACKUPS = '{databaseInternalId}.backups';
+const METRIC_DATABASE_ID_BACKUPS_STORAGE  = '{databaseInternalId}.backups.storage';
 const METRIC_DATABASE_ID_COLLECTIONS = '{databaseInternalId}.collections';
 const METRIC_DOCUMENTS = 'documents';
 const METRIC_DATABASE_ID_DOCUMENTS = '{databaseInternalId}.documents';
@@ -242,6 +248,12 @@ const METRIC_FUNCTION_ID_EXECUTIONS_COMPUTE  = '{functionInternalId}.executions.
 const METRIC_NETWORK_REQUESTS  = 'network.requests';
 const METRIC_NETWORK_INBOUND  = 'network.inbound';
 const METRIC_NETWORK_OUTBOUND  = 'network.outbound';
+
+// Backups
+const BACKUP_RESOURCE_PROJECT = 'backup-project';
+const BACKUP_RESOURCE_DATABASE = 'backup-database';
+const BACKUP_RESOURCE_POLICY = 'backup-policy';
+
 
 $register = new Registry();
 
@@ -1402,19 +1414,24 @@ App::setResource('deviceForLocal', function () {
 });
 
 App::setResource('deviceForFiles', function ($project) {
-    return getDevice(APP_STORAGE_UPLOADS . '/app-' . $project->getId());
+    return getDevice(APP_STORAGE_UPLOADS . '/app-' . $project->getId(), System::getEnv('_APP_CONNECTIONS_STORAGE', ''));
 }, ['project']);
 
 App::setResource('deviceForFunctions', function ($project) {
-    return getDevice(APP_STORAGE_FUNCTIONS . '/app-' . $project->getId());
+    return getDevice(APP_STORAGE_FUNCTIONS . '/app-' . $project->getId(), System::getEnv('_APP_CONNECTIONS_STORAGE', ''));
 }, ['project']);
 
 App::setResource('deviceForBuilds', function ($project) {
-    return getDevice(APP_STORAGE_BUILDS . '/app-' . $project->getId());
+    return getDevice(APP_STORAGE_BUILDS . '/app-' . $project->getId(), System::getEnv('_APP_CONNECTIONS_STORAGE', ''));
 }, ['project']);
 
-function getDevice($root): Device
+App::setResource('deviceForBackups', function ($project) {
+    return getDevice(APP_STORAGE_BACKUPS . '/app-' . $project->getId(), System::getEnv('_APP_CONNECTIONS_STORAGE_BACKUPS', ''));
+}, ['project']);
+
+function getDevice($root, $connection): Device
 {
+    //todo: check $connection param is overwritten?
     $connection = System::getEnv('_APP_CONNECTIONS_STORAGE', '');
 
     if (!empty($connection)) {
