@@ -484,6 +484,7 @@ class Deletes extends Action
             $dsn = new DSN('mysql://' . $document->getAttribute('database', 'console'));
         }
 
+        /** @var Database $dbForProject */
         $dbForProject = $getProjectDB($document);
 
         $projectCollectionIds = [
