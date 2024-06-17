@@ -263,5 +263,18 @@ return [
         'tests' => true,
         'optional' => true,
         'icon' => '/images/services/messaging.png',
-    ]
+    ],
+    'syncs' => [
+        'key' => 'region',
+        'name' => 'region',
+        'subtitle' => 'Appwrite\'s region resources sync Endpoint',
+        'description' => 'region resources sync Endpoint',
+        'controller' => 'api/region.php',
+        'sdk' => false,
+        'docs' => false,
+        'docsUrl' => '',
+        'tests' => true,
+        'optional' => false,
+        'icon' => '',
+    ],
 ];

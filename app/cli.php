@@ -19,6 +19,7 @@ use Utopia\DSN\DSN;
 use Utopia\Logger\Log;
 use Utopia\Platform\Service;
 use Utopia\Pools\Group;
+use Utopia\Queue\Client;
 use Utopia\Queue\Connection;
 use Utopia\Registry\Registry;
 use Utopia\System\System;
@@ -164,6 +165,12 @@ CLI::setResource('queueForDeletes', function (Connection $queue) {
 }, ['queue']);
 CLI::setResource('queueForCertificates', function (Connection $queue) {
     return new Certificate($queue);
+}, ['queue']);
+CLI::setResource('queueForSyncOutAggregation', function (Connection $queue) {
+    return new Client('v1-sync-out-aggregation', $queue);
+}, ['queue']);
+CLI::setResource('queueForSyncOutDelivery', function (Connection $queue) {
+    return new Client('v1-sync-out-delivery', $queue);
 }, ['queue']);
 CLI::setResource('logError', function (Registry $register) {
     return function (Throwable $error, string $namespace, string $action) use ($register) {

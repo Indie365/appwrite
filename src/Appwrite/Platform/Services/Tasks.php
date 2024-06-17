@@ -8,6 +8,7 @@ use Appwrite\Platform\Tasks\Maintenance;
 use Appwrite\Platform\Tasks\Migrate;
 use Appwrite\Platform\Tasks\QueueCount;
 use Appwrite\Platform\Tasks\QueueRetry;
+use Appwrite\Platform\Tasks\RegionSync;
 use Appwrite\Platform\Tasks\ScheduleFunctions;
 use Appwrite\Platform\Tasks\ScheduleMessages;
 use Appwrite\Platform\Tasks\SDKs;
@@ -38,6 +39,8 @@ class Tasks extends Service
             ->addAction(Upgrade::getName(), new Upgrade())
             ->addAction(Vars::getName(), new Vars())
             ->addAction(Version::getName(), new Version())
+            ->addAction(RegionSync::getName(), new RegionSync());
+
         ;
     }
 }

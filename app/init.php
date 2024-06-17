@@ -67,6 +67,7 @@ use Utopia\Logger\Logger;
 use Utopia\Pools\Group;
 use Utopia\Pools\Pool;
 use Utopia\Queue;
+use Utopia\Queue\Client;
 use Utopia\Queue\Connection;
 use Utopia\Registry\Registry;
 use Utopia\Storage\Device;
@@ -129,6 +130,7 @@ const APP_STORAGE_BUILDS = '/storage/builds';
 const APP_STORAGE_CACHE = '/storage/cache';
 const APP_STORAGE_CERTIFICATES = '/storage/certificates';
 const APP_STORAGE_CONFIG = '/storage/config';
+const APP_STORAGE_SYNCS = '/storage/syncs';
 const APP_STORAGE_READ_BUFFER = 20 * (1000 * 1000); //20MB other names `APP_STORAGE_MEMORY_LIMIT`, `APP_STORAGE_MEMORY_BUFFER`, `APP_STORAGE_READ_LIMIT`, `APP_STORAGE_BUFFER_LIMIT`
 const APP_SOCIAL_TWITTER = 'https://twitter.com/appwrite';
 const APP_SOCIAL_TWITTER_HANDLE = 'appwrite';
@@ -1035,6 +1037,15 @@ App::setResource('localeCodes', function () {
 App::setResource('queue', function (Group $pools) {
     return $pools->get('queue')->pop()->getResource();
 }, ['pools']);
+App::setResource('queueForSyncOutAggregation', function (Connection $queue) {
+    return new Client('v1-sync-out-aggregation', $queue);
+}, ['queue']);
+App::setResource('queueForSyncOutDelivery', function (Connection $queue) {
+    return new Client('v1-sync-out-delivery', $queue);
+}, ['queue']);
+App::setResource('queueForEdgeSyncIn', function (Connection $queue) {
+    return new Client('v1-sync-in', $queue);
+}, ['queue']);
 App::setResource('queueForMessaging', function (Connection $queue) {
     return new Messaging($queue);
 }, ['queue']);
@@ -1420,7 +1431,7 @@ App::setResource('getProjectDB', function (Group $pools, Database $dbForConsole,
     };
 }, ['pools', 'dbForConsole', 'cache']);
 
-App::setResource('cache', function (Group $pools) {
+App::setResource('cache', function (Group $pools, Client $queueForSyncOutAggregation) {
     $list = Config::getParam('pools-cache', []);
     $adapters = [];
 
@@ -1431,9 +1442,26 @@ App::setResource('cache', function (Group $pools) {
             ->getResource()
         ;
     }
+    $cache  = new Cache(new Sharding($adapters));
 
-    return new Cache(new Sharding($adapters));
-}, ['pools']);
+    $cache->on(cache::EVENT_SAVE, function ($key) use ($queueForSyncOutAggregation) {
+        $queueForSyncOutAggregation
+            ->enqueue([
+                'type' => 'cache',
+                'key' => $key
+            ]);
+    });
+
+    $cache->on(cache::EVENT_PURGE, function ($key) use ($queueForSyncOutAggregation) {
+        $queueForSyncOutAggregation
+            ->enqueue([
+                'type' => 'cache',
+                'key' => $key
+            ]);
+    });
+
+    return $cache;
+}, ['pools', 'queueForSyncOutAggregation']);
 
 App::setResource('deviceForLocal', function () {
     return new Local();

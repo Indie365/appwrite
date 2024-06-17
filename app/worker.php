@@ -2,12 +2,6 @@
 
 require_once __DIR__ . '/init.php';
 
-use Appwrite\Event\Audit;
-use Appwrite\Event\Build;
-use Appwrite\Event\Certificate;
-use Appwrite\Event\Database as EventDatabase;
-use Appwrite\Event\Delete;
-use Appwrite\Event\Event;
 use Appwrite\Event\Func;
 use Appwrite\Event\Mail;
 use Appwrite\Event\Messaging;
@@ -30,6 +24,7 @@ use Utopia\Logger\Log;
 use Utopia\Logger\Logger;
 use Utopia\Platform\Service;
 use Utopia\Pools\Group;
+use Utopia\Queue\Client;
 use Utopia\Queue\Connection;
 use Utopia\Queue\Message;
 use Utopia\Queue\Server;
@@ -194,6 +189,12 @@ Server::setResource('cache', function (Registry $register) {
     return new Cache(new Sharding($adapters));
 }, ['register']);
 
+Server::setResource('queueForSyncOutAggregation', function (Connection $queue) {
+    return new Client('v1-sync-out-aggregation', $queue);
+}, ['queue']);
+Server::setResource('queueForSyncOutDelivery', function (Connection $queue) {
+    return new Client('v1-sync-out-delivery', $queue);
+}, ['queue']);
 Server::setResource('log', fn () => new Log());
 
 Server::setResource('queueForUsage', function (Connection $queue) {
