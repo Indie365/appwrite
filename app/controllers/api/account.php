@@ -5,6 +5,7 @@ use Appwrite\Auth\Auth;
 use Appwrite\Auth\MFA\Challenge;
 use Appwrite\Auth\MFA\Type;
 use Appwrite\Auth\MFA\Type\TOTP;
+use Appwrite\Auth\MFA\Type\WebAuthn;
 use Appwrite\Auth\OAuth2\Exception as OAuth2Exception;
 use Appwrite\Auth\Phrase;
 use Appwrite\Auth\Validator\Password;
@@ -470,7 +471,6 @@ App::delete('/v1/account')
 
         $response->noContent();
     });
-
 App::get('/v1/account/sessions')
     ->desc('List sessions')
     ->groups(['api', 'account'])
@@ -3682,12 +3682,22 @@ App::get('/v1/account/mfa/factors')
         $recoveryCodeEnabled = \is_array($mfaRecoveryCodes) && \count($mfaRecoveryCodes) > 0;
 
         $totp = TOTP::getAuthenticatorFromUser($user);
+        $webauthnAuths = WebAuthn::getAuthenticatorsFromUser($user) ?? [];
+
+        $webauthnVerified = false;
+        foreach ($webauthnAuths as $authenticator) {
+            if ($authenticator->getAttribute('verified', false)) {
+                $webauthnVerified = true;
+                break;
+            }
+        }
 
         $factors = new Document([
             Type::TOTP => $totp !== null && $totp->getAttribute('verified', false),
             Type::EMAIL => $user->getAttribute('email', false) && $user->getAttribute('emailVerification', false),
             Type::PHONE => $user->getAttribute('phone', false) && $user->getAttribute('phoneVerification', false),
-            Type::RECOVERY_CODE => $recoveryCodeEnabled
+            Type::RECOVERY_CODE => $recoveryCodeEnabled,
+            Type::WEBAUTHN => $webauthnVerified,
         ]);
 
         $response->dynamic($factors, Response::MODEL_MFA_FACTORS);
@@ -3830,6 +3840,133 @@ App::put('/v1/account/mfa/authenticators/:type')
         $response->dynamic($user, Response::MODEL_ACCOUNT);
     });
 
+App::post('/v1/account/mfa/authenticators/webauthn')
+    ->desc('Add WebAuthn Authenticator')
+    ->groups(['api', 'account'])
+    ->label('event', 'users.[userId].update.mfa')
+    ->label('scope', 'account')
+    ->label('audits.event', 'user.update')
+    ->label('audits.resource', 'user/{response.$id}')
+    ->label('audits.userId', '{response.$id}')
+    ->label('sdk.auth', [APP_AUTH_TYPE_SESSION, APP_AUTH_TYPE_JWT])
+    ->label('sdk.namespace', 'account')
+    ->label('sdk.method', 'createWebauthnMfaAuthenticator')
+    ->label('sdk.description', '/docs/references/account/create-webauthn-mfa-authenticator.md')
+    ->label('sdk.response.code', Response::STATUS_CODE_OK)
+    ->label('sdk.response.type', Response::CONTENT_TYPE_JSON)
+    ->label('sdk.response.model', Response::MODEL_WEBAUTHN_REGISTER_CHALLENGE)
+    ->label('sdk.offline.model', '/account')
+    ->label('sdk.offline.key', 'current')
+    ->inject('request')
+    ->inject('response')
+    ->inject('project')
+    ->inject('user')
+    ->inject('dbForProject')
+    ->inject('queueForEvents')
+    ->action(function (Request $request, Response $response, Document $project, Document $user, Database $dbForProject, Event $queueForEvents) {
+        // Clean up any previous challenges not completed
+        $authenticators = array_filter($user->getAttribute('authenticators', []), fn ($authenticator) => $authenticator['type'] === Type::WEBAUTHN);
+
+        foreach ($authenticators as $authenticator) {
+            /** @var Document $authenticator */
+            if (empty($authenticator->getAttribute('verified', false))) {
+                $dbForProject->deleteDocument('authenticators', $authenticator->getId());
+            }
+        }
+
+        $webauthn = new WebAuthn();
+        $relyingParty = $webauthn->createRelyingParty($project, $request);
+        $userEntity = $webauthn->createUserEntity($user);
+        $challenge = $webauthn->createRegisterChallenge($relyingParty, $userEntity, 60 * 5);
+
+        $authenticator = new Document([
+            '$id' => ID::unique(),
+            'userId' => $user->getId(),
+            'userInternalId' => $user->getInternalId(),
+            'type' => Type::WEBAUTHN,
+            'verified' => false,
+            'data' => json_encode($challenge),
+            '$permissions' => [
+                Permission::read(Role::user($user->getId())),
+                Permission::update(Role::user($user->getId())),
+                Permission::delete(Role::user($user->getId())),
+            ]
+        ]);
+
+        $authenticator = $dbForProject->createDocument('authenticators', $authenticator);
+        $dbForProject->purgeCachedDocument('users', $user->getId());
+
+        $queueForEvents->setParam('userId', $user->getId());
+
+        $model = new Document($challenge);
+        $response->dynamic($model, Response::MODEL_WEBAUTHN_REGISTER_CHALLENGE);
+    });
+
+App::put('/v1/account/mfa/authenticators/webauthn')
+    ->desc('Verify WebAuthn Authenticator')
+    ->groups(['api', 'account'])
+    ->label('event', 'users.[userId].update.mfa')
+    ->label('scope', 'account')
+    ->label('audits.event', 'user.update')
+    ->label('audits.resource', 'user/{response.$id}')
+    ->label('audits.userId', '{response.$id}')
+    ->label('sdk.auth', [APP_AUTH_TYPE_SESSION, APP_AUTH_TYPE_JWT])
+    ->label('sdk.namespace', 'account')
+    ->label('sdk.method', 'updateWebauthnMfaAuthenticator')
+    ->label('sdk.description', '/docs/references/account/update-webauthn-mfa-authenticator.md')
+    ->label('sdk.response.code', Response::STATUS_CODE_OK)
+    ->label('sdk.response.type', Response::CONTENT_TYPE_JSON)
+    ->label('sdk.response.model', Response::MODEL_USER)
+    ->label('sdk.offline.model', '/account')
+    ->label('sdk.offline.key', 'current')
+    ->param('challengeResponse', '', new Text(8192), 'Valid verification token.')
+    ->inject('response')
+    ->inject('user')
+    ->inject('session')
+    ->inject('dbForProject')
+    ->inject('queueForEvents')
+    ->action(function (string $challengeResponse, Response $response, Document $user, Document $session, Database $dbForProject, Event $queueForEvents) {
+        /** @var ?Document $authenticator */
+        $authenticator = null;
+
+        foreach ($user->getAttribute('authenticators', []) as $auth) {
+            if ($auth['type'] === Type::WEBAUTHN && empty($auth['verified'])) {
+                $authenticator = $auth;
+            }
+        };
+
+        if ($authenticator === null) {
+            throw new Exception(Exception::USER_AUTHENTICATOR_NOT_FOUND);
+        }
+
+        $webauthn = new WebAuthn();
+        $challenge = $authenticator->getAttribute('data');
+
+        $publicKeyCredentials = null;
+        try {
+            $publicKeyCredentials = $webauthn->verifyRegisterChallenge($challenge, $challengeResponse);
+        } catch (\Exception $e) {
+            throw new Exception(Exception::USER_INVALID_TOKEN);
+        }
+
+        $authenticator->setAttribute('verified', true);
+        $authenticator->setAttribute('data', json_encode($publicKeyCredentials));
+        $dbForProject->updateDocument('authenticators', $authenticator->getId(), $authenticator);
+        $dbForProject->purgeCachedDocument('authenticators', $authenticator->getId());
+        $dbForProject->purgeCachedDocument('users', $user->getId());
+
+        $factors = $session->getAttribute('factors', []);
+        $factors[] = Type::WEBAUTHN;
+        $factors = \array_unique($factors);
+
+        $session->setAttribute('factors', $factors);
+        $dbForProject->updateDocument('sessions', $session->getId(), $session);
+
+        $queueForEvents->setParam('userId', $user->getId());
+
+        $response->dynamic($user, Response::MODEL_ACCOUNT);
+    });
+
 App::post('/v1/account/mfa/recovery-codes')
     ->desc('Create MFA Recovery Codes')
     ->groups(['api', 'account'])
@@ -3957,25 +4094,32 @@ App::delete('/v1/account/mfa/authenticators/:type')
     ->label('sdk.description', '/docs/references/account/delete-mfa-authenticator.md')
     ->label('sdk.response.code', Response::STATUS_CODE_NOCONTENT)
     ->label('sdk.response.model', Response::MODEL_NONE)
-    ->param('type', null, new WhiteList([Type::TOTP]), 'Type of authenticator.')
+    ->param('type', null, new WhiteList([Type::TOTP, Type::WEBAUTHN]), 'Type of authenticator.')
     ->inject('response')
     ->inject('user')
     ->inject('dbForProject')
     ->inject('queueForEvents')
     ->action(function (string $type, Response $response, Document $user, Database $dbForProject, Event $queueForEvents) {
+        $authenticators = [];
 
-        $authenticator = (match ($type) {
-            Type::TOTP => TOTP::getAuthenticatorFromUser($user),
-            default => null
-        });
+        switch ($type) {
+            case Type::TOTP:
+                $authenticators[] = TOTP::getAuthenticatorFromUser($user);
+                break;
+            case Type::WEBAUTHN:
+                $authenticators = WebAuthn::getAuthenticatorsFromUser($user);
+                break;
+        }
 
-        if (!$authenticator) {
+        if (empty($authenticators)) {
             throw new Exception(Exception::USER_AUTHENTICATOR_NOT_FOUND);
         }
 
-        $dbForProject->deleteDocument('authenticators', $authenticator->getId());
-        $dbForProject->purgeCachedDocument('users', $user->getId());
+        foreach ($authenticators as $authenticator) {
+            $dbForProject->deleteDocument('authenticators', $authenticator->getId());
+        }
 
+        $dbForProject->purgeCachedDocument('users', $user->getId());
         $queueForEvents->setParam('userId', $user->getId());
 
         $response->noContent();
@@ -4241,6 +4385,173 @@ App::put('/v1/account/mfa/challenge')
 
         $factors = $session->getAttribute('factors', []);
         $factors[] = $type;
+        $factors = \array_unique($factors);
+
+        $session
+            ->setAttribute('factors', $factors)
+            ->setAttribute('mfaUpdatedAt', DateTime::now());
+
+        $dbForProject->updateDocument('sessions', $session->getId(), $session);
+
+        $queueForEvents
+                    ->setParam('userId', $user->getId())
+                    ->setParam('sessionId', $session->getId());
+
+        $response->dynamic($session, Response::MODEL_SESSION);
+    });
+
+App::post('/v1/account/mfa/challenge/webauthn')
+    ->desc('Create WebAuthn MFA Challenge')
+    ->groups(['api', 'account', 'mfa'])
+    ->label('scope', 'account')
+    ->label('event', 'users.[userId].challenges.[challengeId].create')
+    ->label('audits.event', 'challenge.create')
+    ->label('audits.resource', 'user/{response.userId}')
+    ->label('audits.userId', '{response.userId}')
+    ->label('sdk.auth', [])
+    ->label('sdk.namespace', 'account')
+    ->label('sdk.method', 'createWebauthnMfaChallenge')
+    ->label('sdk.description', '/docs/references/account/create-webauthn-mfa-challenge.md')
+    ->label('sdk.response.code', Response::STATUS_CODE_CREATED)
+    ->label('sdk.response.type', Response::CONTENT_TYPE_JSON)
+    ->label('sdk.response.model', Response::MODEL_WEBAUTHN_LOGIN_CHALLENGE)
+    ->label('abuse-limit', 10)
+    ->label('abuse-key', 'url:{url},token:{param-token}')
+    ->inject('response')
+    ->inject('dbForProject')
+    ->inject('user')
+    ->inject('locale')
+    ->inject('project')
+    ->inject('request')
+    ->inject('queueForEvents')
+    ->action(function (Response $response, Database $dbForProject, Document $user, Locale $locale, Document $project, Request $request, Event $queueForEvents) {
+        $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_WEBAUTHN);
+
+        $webauthn = new WebAuthn();
+        $allowedCredentials = $webauthn->getAllowedCredentials($user);
+
+        if (empty($allowedCredentials)) {
+            throw new Exception(Exception::USER_AUTHENTICATOR_NOT_FOUND);
+        }
+
+        $relyingParty = $webauthn->createRelyingParty($project, $request);
+        $webAuthnChallenge = $webauthn->createLoginChallenge($relyingParty, $allowedCredentials, Auth::TOKEN_EXPIRATION_WEBAUTHN);
+
+        // Store challenge
+        $challenge = new Document([
+            'userId' => $user->getId(),
+            'userInternalId' => $user->getInternalId(),
+            'type' => Type::WEBAUTHN,
+            'code' => $webAuthnChallenge['challenge'],
+            'expire' => $expire,
+            '$permissions' => [
+                Permission::read(Role::user($user->getId())),
+                Permission::update(Role::user($user->getId())),
+                Permission::delete(Role::user($user->getId())),
+            ],
+        ]);
+
+        $challenge = $dbForProject->createDocument('challenges', $challenge);
+
+        $queueForEvents
+            ->setParam('userId', $user->getId())
+            ->setParam('challengeId', $challenge->getId());
+
+        // Send challenge
+        $response->dynamic(new Document(array_merge(
+            [
+                '$id' => $challenge->getId(),
+            ],
+            $webAuthnChallenge
+        )), Response::MODEL_WEBAUTHN_LOGIN_CHALLENGE);
+    });
+
+App::put('/v1/account/mfa/challenge/webauthn')
+    ->desc('Create WebAuthn MFA Challenge (confirmation)')
+    ->groups(['api', 'account', 'mfa'])
+    ->label('scope', 'account')
+    ->label('event', 'users.[userId].sessions.[sessionId].create')
+    ->label('audits.event', 'challenges.update')
+    ->label('audits.resource', 'user/{response.userId}')
+    ->label('audits.userId', '{response.userId}')
+    ->label('sdk.auth', [APP_AUTH_TYPE_SESSION, APP_AUTH_TYPE_JWT])
+    ->label('sdk.namespace', 'account')
+    ->label('sdk.method', 'updateWebauthnMfaChallenge')
+    ->label('sdk.description', '/docs/references/account/update-webauthn-mfa-challenge.md')
+    ->label('sdk.response.code', Response::STATUS_CODE_NOCONTENT)
+    ->label('sdk.response.model', Response::MODEL_SESSION)
+    ->label('abuse-limit', 10)
+    ->label('abuse-key', 'userId:{param-userId}')
+    ->param('challengeId', '', new Text(256), 'ID of the challenge.')
+    ->param('challengeResponse', '', new Text(8192), 'Valid verification token.')
+    ->inject('project')
+    ->inject('response')
+    ->inject('request')
+    ->inject('user')
+    ->inject('session')
+    ->inject('dbForProject')
+    ->inject('queueForEvents')
+    ->action(function (string $challengeId, string $challengeResponse, Document $project, Response $response, Request $request, Document $user, Document $session, Database $dbForProject, Event $queueForEvents) {
+        $challenge = $dbForProject->getDocument('challenges', $challengeId);
+
+        if ($challenge->isEmpty()) {
+            throw new Exception(Exception::USER_INVALID_TOKEN);
+        }
+
+        $authenticators = array_filter(Webauthn::getAuthenticatorsFromUser($user), function ($auth) {
+            return !empty($auth['verified']);
+        });
+
+        $webauthn = new WebAuthn();
+        $relyingParty = $webauthn->createRelyingParty($project, $request);
+
+        $responseJson = json_decode($challengeResponse, true);
+
+        // Find authenticator used
+        $authenticator = null;
+        foreach ($authenticators as $auth) {
+            $data = $auth['data'];
+            if ($data['publicKeyCredentialId'] == $responseJson['id']) {
+                $authenticator = $auth;
+                break;
+            }
+        }
+
+        if ($authenticator === null) {
+            throw new Exception(Exception::USER_AUTHENTICATOR_NOT_FOUND);
+        }
+
+        /** @var Document $authenticator */
+
+        // Check challenge
+        $publicKeyCredential = null;
+        try {
+            $publicKeyCredential = $webauthn->verifyLoginChallenge(
+                challenge: $challenge->getArrayCopy(),
+                challengeResponse: $challengeResponse,
+                hostname: $request->gethostname(),
+                timeout: Auth::TOKEN_EXPIRATION_WEBAUTHN,
+                allowCredentials: $webauthn->getAllowedCredentials($user),
+                rpEntity: $relyingParty,
+                authenticatorPublicKey: $webauthn->deserializePublicKeyCredentialSource($authenticator->getAttribute('data', []))
+            );
+        } catch (\Exception $e) {
+            throw new Exception(Exception::USER_INVALID_TOKEN);
+        }
+
+        // Update authenticator as counter has changed
+        $dbForProject->updateDocument('authenticators', $authenticator->getId(), new Document([
+            'data' => json_encode($publicKeyCredential)
+        ]));
+
+        // Update Session
+        Authorization::skip(function () use ($dbForProject, $challengeId) {
+            $dbForProject->deleteDocument('challenges', $challengeId);
+        });
+        $dbForProject->purgeCachedDocument('users', $user->getId());
+
+        $factors = $session->getAttribute('factors', []);
+        $factors[] = TYPE::WEBAUTHN;
         $factors = \array_unique($factors);
 
         $session
