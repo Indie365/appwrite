@@ -305,9 +305,7 @@ class WebhooksCustomServerTest extends Scope
     {
         $id = $data['userId'];
 
-        /**
-         * Test for SUCCESS
-         */
+        // Block user if status is false
         $user = $this->client->call(Client::METHOD_PATCH, '/users/' . $data['userId'] . '/status', array_merge([
             'content-type' => 'application/json',
             'x-appwrite-project' => $this->getProject()['$id'],
@@ -315,7 +313,28 @@ class WebhooksCustomServerTest extends Scope
             'status' => false,
         ]);
 
+        $this->assertEquals($user['headers']['status-code'], 500);
+
+        // Verify block status
+        $user = $this->client->call(Client::METHOD_GET, '/users/' . $data['userId'], array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+        ], $this->getHeaders()));
+
         $this->assertEquals($user['headers']['status-code'], 200);
+        $this->assertEquals($user['body']['status'], false);
+        $this->assertNotEmpty($user['body']['$id']);
+
+        // Reactivate user
+        $user = $this->client->call(Client::METHOD_PATCH, '/users/' . $data['userId'] . '/status', array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+        ], $this->getHeaders()), [
+            'status' => true,
+        ]);
+
+        $this->assertEquals($user['headers']['status-code'], 200);
+        $this->assertEquals($user['body']['status'], true);
         $this->assertNotEmpty($user['body']['$id']);
 
         $webhook = $this->getLastRequest();
@@ -337,7 +356,7 @@ class WebhooksCustomServerTest extends Scope
         $this->assertNotEmpty($webhook['data']['$id']);
         $this->assertEquals($webhook['data']['name'], $data['name']);
         $this->assertEquals(true, (new DatetimeValidator())->isValid($webhook['data']['registration']));
-        $this->assertEquals($webhook['data']['status'], false);
+        $this->assertEquals($webhook['data']['status'], true);
         $this->assertEquals($webhook['data']['email'], $data['email']);
         $this->assertEquals($webhook['data']['emailVerification'], false);
         $this->assertEquals($webhook['data']['prefs']['a'], 'b');
@@ -379,7 +398,7 @@ class WebhooksCustomServerTest extends Scope
         $this->assertNotEmpty($webhook['data']['$id']);
         $this->assertEquals($webhook['data']['name'], $data['name']);
         $this->assertEquals(true, (new DatetimeValidator())->isValid($webhook['data']['registration']));
-        $this->assertEquals($webhook['data']['status'], false);
+        $this->assertEquals($webhook['data']['status'], true);
         $this->assertEquals($webhook['data']['email'], $data['email']);
         $this->assertEquals($webhook['data']['emailVerification'], false);
         $this->assertEquals($webhook['data']['prefs']['a'], 'b');
