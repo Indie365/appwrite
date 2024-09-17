@@ -7,6 +7,7 @@ use Appwrite\Messaging\Adapter\Realtime;
 use Appwrite\Permission;
 use Appwrite\Role;
 use Exception;
+use phpDocumentor\Reflection\Types\Callable_;
 use Utopia\CLI\Console;
 use Utopia\Database\Database;
 use Utopia\Database\Document;
@@ -49,7 +50,8 @@ class Migrations extends Action
             ->inject('dbForProject')
             ->inject('dbForConsole')
             ->inject('log')
-            ->callback(fn (Message $message, Database $dbForProject, Database $dbForConsole, Log $log) => $this->action($message, $dbForProject, $dbForConsole, $log));
+            ->inject('realtimeConnection')
+            ->callback(fn (Message $message, Database $dbForProject, Database $dbForConsole, Log $log, Callable $realtimeConnection) => $this->action($message, $dbForProject, $dbForConsole, $log, $realtimeConnection));
     }
 
     /**
@@ -60,13 +62,15 @@ class Migrations extends Action
      * @return void
      * @throws Exception
      */
-    public function action(Message $message, Database $dbForProject, Database $dbForConsole, Log $log): void
+    public function action(Message $message, Database $dbForProject, Database $dbForConsole, Log $log, Callable $realtimeConnection): void
     {
         $payload = $message->getPayload() ?? [];
 
         if (empty($payload)) {
             throw new Exception('Missing payload');
         }
+
+        $this->realtimeConnection = $realtimeConnection;
 
         $events    = $payload['events'] ?? [];
         $project   = new Document($payload['project'] ?? []);
@@ -89,7 +93,7 @@ class Migrations extends Action
         $log->addTag('migrationId', $migration->getId());
         $log->addTag('projectId', $project->getId());
 
-        $this->processMigration($project, $migration, $log);
+        $this->processMigration($project, $migration, $log, $realtimeConnection);
     }
 
     /**
@@ -134,7 +138,7 @@ class Migrations extends Action
      * @throws \Utopia\Database\Exception
      * @throws Exception
      */
-    protected function updateMigrationDocument(Document $migration, Document $project): Document
+    protected function updateMigrationDocument(Document $migration, Document $project, Callable $realtimeConnection): Document
     {
         /** Trigger Realtime */
         $allEvents = Event::generateEvents('migrations.[migrationId].update', [
@@ -148,6 +152,7 @@ class Migrations extends Action
         );
 
         Realtime::send(
+            redis: $realtimeConnection($this->sourceRegion),
             projectId: 'console',
             payload: $migration->getArrayCopy(),
             events: $allEvents,
@@ -156,6 +161,7 @@ class Migrations extends Action
         );
 
         Realtime::send(
+            redis: $realtimeConnection($this->sourceRegion),
             projectId: $project->getId(),
             payload: $migration->getArrayCopy(),
             events: $allEvents,
@@ -243,7 +249,7 @@ class Migrations extends Action
      * @throws Structure
      * @throws \Utopia\Database\Exception
      */
-    protected function processMigration(Document $project, Document $migration, Log $log): void
+    protected function processMigration(Document $project, Document $migration, Log $log, Callable $realtimeConnection): void
     {
         /**
          * @var Document $migrationDocument
@@ -259,7 +265,7 @@ class Migrations extends Action
             $migrationDocument->setAttribute('stage', 'processing');
             $migrationDocument->setAttribute('status', 'processing');
             $log->addBreadcrumb(new Breadcrumb("debug", "migration", "Migration hit stage 'processing'", \microtime(true)));
-            $this->updateMigrationDocument($migrationDocument, $projectDocument);
+            $this->updateMigrationDocument($migrationDocument, $projectDocument, $realtimeConnection);
 
             $log->addTag('type', $migrationDocument->getAttribute('source'));
 
@@ -281,12 +287,12 @@ class Migrations extends Action
             /** Start Transfer */
             $migrationDocument->setAttribute('stage', 'migrating');
             $log->addBreadcrumb(new Breadcrumb("debug", "migration", "Migration hit stage 'migrating'", \microtime(true)));
-            $this->updateMigrationDocument($migrationDocument, $projectDocument);
-            $transfer->run($migrationDocument->getAttribute('resources'), function () use ($migrationDocument, $transfer, $projectDocument) {
+            $this->updateMigrationDocument($migrationDocument, $projectDocument, $realtimeConnection);
+            $transfer->run($migrationDocument->getAttribute('resources'), function () use ($realtimeConnection, $migrationDocument, $transfer, $projectDocument) {
                 $migrationDocument->setAttribute('resourceData', json_encode($transfer->getCache()));
                 $migrationDocument->setAttribute('statusCounters', json_encode($transfer->getStatusCounters()));
 
-                $this->updateMigrationDocument($migrationDocument, $projectDocument);
+                $this->updateMigrationDocument($migrationDocument, $projectDocument, $realtimeConnection);
             });
 
             $sourceErrors = $source->getErrors();
@@ -309,7 +315,7 @@ class Migrations extends Action
 
                 $migrationDocument->setAttribute('errors', $errorMessages);
                 $log->addExtra('migrationErrors', json_encode($errorMessages));
-                $this->updateMigrationDocument($migrationDocument, $projectDocument);
+                $this->updateMigrationDocument($migrationDocument, $projectDocument, $realtimeConnection);
 
                 return;
             }
@@ -352,7 +358,7 @@ class Migrations extends Action
                 $this->removeAPIKey($tempAPIKey);
             }
             if ($migrationDocument) {
-                $this->updateMigrationDocument($migrationDocument, $projectDocument);
+                $this->updateMigrationDocument($migrationDocument, $projectDocument, $realtimeConnection);
 
                 if ($migrationDocument->getAttribute('status', '') == 'failed') {
                     throw new Exception("Migration failed");

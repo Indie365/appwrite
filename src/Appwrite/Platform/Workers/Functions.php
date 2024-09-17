@@ -9,6 +9,7 @@ use Appwrite\Messaging\Adapter\Realtime;
 use Appwrite\Utopia\Response\Model\Execution;
 use Exception;
 use Executor\Executor;
+use phpDocumentor\Reflection\Types\Callable_;
 use Utopia\CLI\Console;
 use Utopia\Config\Config;
 use Utopia\Database\Database;
@@ -27,6 +28,12 @@ use Utopia\System\System;
 
 class Functions extends Action
 {
+
+    /**
+     * @var mixed|string
+     */
+    protected string $sourceRegion;
+
     public static function getName(): string
     {
         return 'functions';
@@ -46,7 +53,8 @@ class Functions extends Action
             ->inject('queueForEvents')
             ->inject('queueForUsage')
             ->inject('log')
-            ->callback(fn (Message $message, Database $dbForProject, Func $queueForFunctions, Event $queueForEvents, Usage $queueForUsage, Log $log) => $this->action($message, $dbForProject, $queueForFunctions, $queueForEvents, $queueForUsage, $log));
+            ->inject('realtimeConnection')
+            ->callback(fn (Message $message, Database $dbForProject, Func $queueForFunctions, Event $queueForEvents, Usage $queueForUsage, Log $log, Callable $realtimeConnection) => $this->action($message, $dbForProject, $queueForFunctions, $queueForEvents, $queueForUsage, $log, $realtimeConnection));
     }
 
     /**
@@ -62,13 +70,14 @@ class Functions extends Action
      * @throws \Utopia\Database\Exception
      * @throws Conflict
      */
-    public function action(Message $message, Database $dbForProject, Func $queueForFunctions, Event $queueForEvents, Usage $queueForUsage, Log $log): void
+    public function action(Message $message, Database $dbForProject, Func $queueForFunctions, Event $queueForEvents, Usage $queueForUsage, Log $log, Callable $realtimeConnection): void
     {
         $payload = $message->getPayload() ?? [];
 
         if (empty($payload)) {
             throw new Exception('Missing payload');
         }
+
 
         $payload = $message->getPayload() ?? [];
 
@@ -86,6 +95,8 @@ class Functions extends Action
         $method = $payload['method'] ?? 'POST';
         $headers = $payload['headers'] ?? [];
         $path = $payload['path'] ?? '/';
+
+        $this->sourceRegion = $payload['sourceRegion'] ?? 'default';
 
         if ($project->getId() === 'console') {
             return;
@@ -119,6 +130,7 @@ class Functions extends Action
                     Console::success('Iterating function: ' . $function->getAttribute('name'));
 
                     $this->execute(
+                        realtimeConnection: $realtimeConnection,
                         log: $log,
                         dbForProject: $dbForProject,
                         queueForFunctions: $queueForFunctions,
@@ -155,6 +167,7 @@ class Functions extends Action
                 $execution = new Document($payload['execution'] ?? []);
                 $user = new Document($payload['user'] ?? []);
                 $this->execute(
+                    realtimeConnection: $realtimeConnection,
                     log: $log,
                     dbForProject: $dbForProject,
                     queueForFunctions: $queueForFunctions,
@@ -176,6 +189,7 @@ class Functions extends Action
                 break;
             case 'schedule':
                 $this->execute(
+                    realtimeConnection: $realtimeConnection,
                     log: $log,
                     dbForProject: $dbForProject,
                     queueForFunctions: $queueForFunctions,
@@ -287,6 +301,7 @@ class Functions extends Action
      * @throws Conflict
      */
     private function execute(
+        Callable $realtimeConnection,
         Log $log,
         Database $dbForProject,
         Func $queueForFunctions,
@@ -545,6 +560,7 @@ class Functions extends Action
             payload: $execution
         );
         Realtime::send(
+            redis: $realtimeConnection($this->sourceRegion),
             projectId: 'console',
             payload: $execution->getArrayCopy(),
             events: $allEvents,
@@ -552,6 +568,7 @@ class Functions extends Action
             roles: $target['roles']
         );
         Realtime::send(
+            redis: $realtimeConnection($this->sourceRegion),
             projectId: $project->getId(),
             payload: $execution->getArrayCopy(),
             events: $allEvents,

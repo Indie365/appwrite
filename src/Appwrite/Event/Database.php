@@ -6,6 +6,7 @@ use Utopia\Database\Document;
 use Utopia\DSN\DSN;
 use Utopia\Queue\Client;
 use Utopia\Queue\Connection;
+use Utopia\System\System;
 
 class Database extends Event
 {
@@ -121,6 +122,7 @@ class Database extends Event
 
         try {
             $result = $client->enqueue([
+                'sourceRegion' =>  System::getEnv('_APP_REGION', 'default'),
                 'project' => $this->project,
                 'user' => $this->user,
                 'type' => $this->type,
