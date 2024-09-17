@@ -47,15 +47,12 @@ class ScheduleExecutions extends ScheduleBase
 
             $delay = $scheduledAt->getTimestamp() - (new \DateTime())->getTimestamp();
 
-
             \go(function () use ($queueForFunctions, $schedule, $delay) {
                 Co::sleep($delay);
 
                 $queueForFunctions
                     ->setType('schedule')
-                    // Set functionId instead of function as we don't have $dbForProject
-                    // TODO: Refactor to use function instead of functionId
-                    ->setFunctionId($schedule['resource']['functionId'])
+                    ->setFunction($schedule['function'])
                     ->setExecution($schedule['resource'])
                     ->setMethod($schedule['data']['method'] ?? 'POST')
                     ->setPath($schedule['data']['path'] ?? '/')
