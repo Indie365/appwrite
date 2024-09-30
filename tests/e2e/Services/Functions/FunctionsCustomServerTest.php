@@ -2671,8 +2671,9 @@ class FunctionsCustomServerTest extends Scope
         $this->assertEquals(204, $response['headers']['status-code']);
     }
 
-    public function testCreateFunctionWithResponseFormatHeader()
+    public function testResponseFilters()
     {
+        // create function with 1.5.0 response format
         $response = $this->client->call(Client::METHOD_POST, '/functions', array_merge([
             'content-type' => 'application/json',
             'x-appwrite-project' => $this->getProject()['$id'],
@@ -2686,6 +2687,29 @@ class FunctionsCustomServerTest extends Scope
         ]);
 
         $this->assertEquals(201, $response['headers']['status-code']);
+        $this->assertArrayNotHasKey('scopes', $response['body']);
+        $this->assertArrayNotHasKey('specification', $response['body']);
+
+        // get function with 1.5.0 response format header
+        $function = $this->client->call(Client::METHOD_GET, '/functions/' . $response['body']['$id'], array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+            'x-appwrite-response-format' => '1.5.0', // add response format header
+        ], $this->getHeaders()));
+
+        $this->assertEquals(200, $function['headers']['status-code']);
+        $this->assertArrayNotHasKey('scopes', $function['body']);
+        $this->assertArrayNotHasKey('specification', $function['body']);
+
+        // get function without response format header
+        $function = $this->client->call(Client::METHOD_GET, '/functions/' . $response['body']['$id'], array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+        ], $this->getHeaders()));
+
+        $this->assertEquals(200, $function['headers']['status-code']);
+        $this->assertArrayHasKey('scopes', $function['body']);
+        $this->assertArrayHasKey('specification', $function['body']);
 
         // Cleanup : Delete function
         $response = $this->client->call(Client::METHOD_DELETE, '/functions/' . $response['body']['$id'], [
@@ -2695,6 +2719,55 @@ class FunctionsCustomServerTest extends Scope
         ], []);
 
         $this->assertEquals(204, $response['headers']['status-code']);
+    }
+
+    public function testRequestFilters()
+    {
+        // create function
+        $response = $this->client->call(Client::METHOD_POST, '/functions', array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+        ], $this->getHeaders()), [
+            'functionId' => ID::unique(),
+            'name' => 'Test',
+            'runtime' => 'php-8.0',
+            'entrypoint' => 'index.php',
+            'timeout' => 15,
+        ]);
+
+        $this->assertEquals(201, $response['headers']['status-code']);
+
+        // create another function
+        $response = $this->client->call(Client::METHOD_POST, '/functions', array_merge([
+            'content-type' => 'application/json',
+            'x-appwrite-project' => $this->getProject()['$id'],
+        ], $this->getHeaders()), [
+            'functionId' => ID::unique(),
+            'name' => 'Test2',
+            'runtime' => 'php-8.0',
+            'entrypoint' => 'index.php',
+            'timeout' => 15,
+        ]);
+
+        $this->assertEquals(201, $response['headers']['status-code']);
+
+        // list functions using request filters
+        $response = $this->client->call(
+            Client::METHOD_GET,
+            '/functions',
+            array_merge([
+                'content-type' => 'application/json',
+                'x-appwrite-project' => $this->getProject()['$id'],
+                'x-appwrite-response-format' => '1.4.0', // Set response format for 1.4 syntax
+            ], $this->getHeaders()),
+            [
+                'queries' => [ 'equal("name", ["Test2"])' ]
+            ]
+        );
+
+        $this->assertEquals(200, $response['headers']['status-code']);
+        $this->assertCount(1, $response['body']['functions']);
+        $this->assertEquals('Test2', $response['body']['functions'][0]['name']);
     }
 
     public function testFunctionLogging()
