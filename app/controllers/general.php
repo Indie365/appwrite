@@ -9,6 +9,7 @@ use Appwrite\Event\Event;
 use Appwrite\Event\Usage;
 use Appwrite\Extend\Exception as AppwriteException;
 use Appwrite\Network\Validator\Origin;
+use Appwrite\Platform\Appwrite;
 use Appwrite\Utopia\Request;
 use Appwrite\Utopia\Request\Filters\V16 as RequestV16;
 use Appwrite\Utopia\Request\Filters\V17 as RequestV17;
@@ -36,6 +37,7 @@ use Utopia\Logger\Adapter\Sentry;
 use Utopia\Logger\Log;
 use Utopia\Logger\Log\User;
 use Utopia\Logger\Logger;
+use Utopia\Platform\Service;
 use Utopia\System\System;
 use Utopia\Validator\Hostname;
 use Utopia\Validator\Text;
@@ -701,7 +703,8 @@ App::error()
     ->inject('logger')
     ->inject('log')
     ->inject('queueForUsage')
-    ->action(function (Throwable $error, App $utopia, Request $request, Response $response, Document $project, ?Logger $logger, Log $log, Usage $queueForUsage) {
+    ->inject('hasDevelopmentKey')
+    ->action(function (Throwable $error, App $utopia, Request $request, Response $response, Document $project, ?Logger $logger, Log $log, Usage $queueForUsage, bool $hasDevelopmentKey) {
         $version = System::getEnv('_APP_VERSION', 'UNKNOWN');
         $route = $utopia->getRoute();
         $class = \get_class($error);
@@ -896,7 +899,7 @@ App::error()
 
         $type = $error->getType();
 
-        $output = ((App::isDevelopment())) ? [
+        $output = ((App::isDevelopment()) || $hasDevelopmentKey) ? [
             'message' => $message,
             'code' => $code,
             'file' => $file,
@@ -937,7 +940,7 @@ App::error()
 
         $response->dynamic(
             new Document($output),
-            $utopia->isDevelopment() ? Response::MODEL_ERROR_DEV : Response::MODEL_ERROR
+            $utopia->isDevelopment() || $hasDevelopmentKey ? Response::MODEL_ERROR_DEV : Response::MODEL_ERROR
         );
     });
 
@@ -1054,3 +1057,9 @@ App::wildcard()
 foreach (Config::getParam('services', []) as $service) {
     include_once $service['controller'];
 }
+
+
+// Modules
+
+$platform = new Appwrite();
+$platform->init(Service::TYPE_HTTP);

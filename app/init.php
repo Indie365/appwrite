@@ -54,6 +54,7 @@ use Utopia\Database\Adapter\MariaDB;
 use Utopia\Database\Adapter\MySQL;
 use Utopia\Database\Adapter\SQL;
 use Utopia\Database\Database;
+use Utopia\Database\DateTime as DatabaseDateTime;
 use Utopia\Database\Document;
 use Utopia\Database\Helpers\ID;
 use Utopia\Database\Query;
@@ -453,6 +454,20 @@ Database::addFilter(
     function (mixed $value, Document $document, Database $database) {
         return $database
             ->find('keys', [
+                Query::equal('projectInternalId', [$document->getInternalId()]),
+                Query::limit(APP_LIMIT_SUBQUERY),
+            ]);
+    }
+);
+
+Database::addFilter(
+    'subQueryDevelopmentKeys',
+    function (mixed $value) {
+        return;
+    },
+    function (mixed $value, Document $document, Database $database) {
+        return $database
+            ->find('developmentKeys', [
                 Query::equal('projectInternalId', [$document->getInternalId()]),
                 Query::limit(APP_LIMIT_SUBQUERY),
             ]);
@@ -1769,3 +1784,24 @@ App::setResource('requestTimestamp', function ($request) {
 App::setResource('plan', function (array $plan = []) {
     return [];
 });
+
+App::setResource('hasDevelopmentKey', function ($request, $project, $dbForConsole) {
+    $developmentKey = $request->getHeader('x-appwrite-development-key', '');
+    // Check if given key match project's development keys
+    $key = $project->find('secret', $developmentKey, 'developmentKeys');
+    if ($key) {
+        $expire = $key->getAttribute('expire');
+        if (!empty($expire) && $expire < DatabaseDateTime::formatTz(DatabaseDateTime::now())) {
+            return false;
+        }
+
+        $accessedAt = $key->getAttribute('accessedAt', '');
+        if (DatabaseDateTime::formatTz(DatabaseDateTime::addSeconds(new \DateTime(), -APP_KEY_ACCESS)) > $accessedAt) {
+            $key->setAttribute('accessedAt', DatabaseDateTime::now());
+            Authorization::skip(fn () => $dbForConsole->updateDocument('keys', $key->getId(), $key));
+            $dbForConsole->purgeCachedDocument('projects', $project->getId());
+        }
+        return true;
+    }
+    return false;
+}, ['request', 'project', 'dbForConsole']);
